@@ -47,6 +47,29 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # Publishing requires a specific version tag — without it, electron-builder
+      # would attempt to upload to whatever version is currently in the
+      # source's package.json (typically the last released version), either
+      # overwriting that Release or appending to it. The intended publish flow
+      # is: tag agentloop with vX.Y.Z, then dispatch this workflow with
+      # version=X.Y.Z. source_ref is for dry-runs only.
+      - name: Validate publish inputs
+        if: ${{ inputs.publish }}
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::publish=true requires 'version' input (e.g. 0.21.0-alpha.12)."
+            echo "::error::Tag agentloop with vX.Y.Z first, then re-dispatch with version=X.Y.Z."
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version '$VERSION' is not valid semver (without 'v' prefix)."
+            exit 1
+          fi
+          echo "Publishing version $VERSION"
+
       # Validate source_ref against an allowlist before any checkout runs.
       # Untrusted refs would let a workflow_dispatch caller execute arbitrary
       # branch code with the App token in scope. Allowed: `main`, anything
