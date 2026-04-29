@@ -168,6 +168,12 @@ jobs:
 
       # Dry-run path: produce a real installable artifact (DMG) to validate
       # the full packaging pipeline without uploading to Releases.
+      #
+      # Note: `bun run dist` (= electron-builder w/o --publish) still tries
+      # to interact with the configured publisher in electron-builder.yml
+      # to write the auto-update manifest, which requires GH_TOKEN. We
+      # explicitly pass `--publish never` to skip the publisher entirely
+      # while still producing the DMG.
       - name: Package only (no publish)
         if: ${{ !inputs.publish }}
         env:
@@ -176,7 +182,9 @@ jobs:
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: bun run dist
+        run: |
+          bun run build:desktop
+          node scripts/run-electron-builder.mjs --publish never
 
       - name: Upload packaged artifacts (dry-run only)
         if: ${{ !inputs.publish }}
