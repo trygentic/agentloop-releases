@@ -1,0 +1,192 @@
+name: release-desktop
+
+# Builds the AgentLoop desktop app from source in trygentic/agentloop and
+# (optionally) publishes artifacts to this repo's GitHub Releases.
+#
+# Source code lives in the private trygentic/agentloop repo. This workflow
+# checks it out using a token minted from the trygentic-release-bot GitHub
+# App, which is installed on agentloop, agentloop-memory, and
+# agentloop-releases. When this repo eventually flips public, the same
+# workflow can run on free public-repo runners (incl. ARM Windows).
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Ref in trygentic/agentloop to build (branch, tag, or SHA). Defaults to main.'
+        required: false
+        type: string
+        default: 'main'
+      version:
+        description: 'Release version (without v prefix). Leave empty for a dry-run packaging without publishing.'
+        required: false
+        type: string
+      publish:
+        description: 'Publish artifacts to this repo''s GitHub Releases.'
+        required: false
+        type: boolean
+        default: false
+
+# GITHUB_TOKEN is unused (every step uses a minted App token), so deny it
+# everything we don't need. Default for private repos is already `read`,
+# but spelling it out makes the intent explicit and survives a public flip
+# (defaults differ for public repos in some org policies).
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: darwin
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      # Validate source_ref against an allowlist before any checkout runs.
+      # Untrusted refs would let a workflow_dispatch caller execute arbitrary
+      # branch code with the App token in scope. Allowed: `main`, anything
+      # starting with `v` followed by a digit (release tags), or a 7–40 char
+      # hex commit SHA.
+      - name: Validate source_ref
+        env:
+          REF: ${{ inputs.source_ref }}
+        shell: bash
+        run: |
+          if [[ -z "$REF" ]]; then
+            echo "source_ref is empty (will use version-derived tag)"
+            exit 0
+          fi
+          if [[ "$REF" == "main" ]] \
+            || [[ "$REF" =~ ^v[0-9] ]] \
+            || [[ "$REF" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "source_ref '$REF' is allowed"
+            exit 0
+          fi
+          echo "::error::source_ref '$REF' is not in the allowlist (main, v*, or commit SHA)"
+          exit 1
+
+      # Source-side App token. Read-only — every build step (bun install,
+      # patch scripts, vendor builds) runs with this token in scope, so we
+      # deny it write access to the private source repo to limit the blast
+      # radius of any compromised dep.
+      - name: Generate App token (source, read-only)
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: app-token-source
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: trygentic
+          repositories: agentloop,agentloop-memory
+          permission-contents: read
+
+      # Pin to the requested ref. For tag releases pass version=X.Y.Z;
+      # otherwise the workflow checks out source_ref (default main).
+      - name: Checkout source (trygentic/agentloop)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: trygentic/agentloop
+          token: ${{ steps.app-token-source.outputs.token }}
+          fetch-depth: 0
+          ref: ${{ inputs.version && format('refs/tags/v{0}', inputs.version) || inputs.source_ref }}
+
+      - name: Checkout submodules
+        env:
+          GH_TOKEN: ${{ steps.app-token-source.outputs.token }}
+        shell: bash
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Apply OpenCode patches
+        shell: bash
+        run: bash scripts/apply-opencode-patches.sh
+
+      - name: Install vendor dependencies
+        shell: bash
+        run: cd vendor/opencode/packages/opencode && bun install
+
+      - name: Build TypeScript
+        run: bun run build:ts-only
+
+      - name: Bundle vendor subset
+        run: bun run bundle:opencode-subset
+
+      - name: Rewrite opencode imports
+        run: bun run rewrite-opencode-imports
+
+      - name: Build renderer bundle
+        run: bun run build:renderer
+
+      - name: Fetch Bun binary for target
+        run: bun run fetch-bun
+
+      # Publish-side App token. Minted only when actually publishing, so it
+      # never exists during dry-runs and never sees user-controllable build
+      # scripts. Scoped to this repo only with contents:write.
+      - name: Generate App token (publish, write)
+        if: ${{ inputs.publish }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: app-token-publish
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: trygentic
+          repositories: agentloop-releases
+          permission-contents: write
+
+      # Packaging + publishing. electron-builder reads GH_TOKEN from the env
+      # and uploads to the repo configured in electron-builder.yml
+      # (trygentic/agentloop-releases — i.e. this repo).
+      - name: Package and publish (electron-builder)
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ steps.app-token-publish.outputs.token }}
+          MIXPANEL_TOKEN: ${{ secrets.MIXPANEL_TOKEN }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: bun run dist:publish
+
+      # Dry-run path: produce a real installable artifact (DMG) to validate
+      # the full packaging pipeline without uploading to Releases.
+      - name: Package only (no publish)
+        if: ${{ !inputs.publish }}
+        env:
+          MIXPANEL_TOKEN: ${{ secrets.MIXPANEL_TOKEN }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: bun run dist
+
+      - name: Upload packaged artifacts (dry-run only)
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentloop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/**/*.dmg
+            release/**/*.zip
+            release/**/*.exe
+            release/**/*.yml
+          if-no-files-found: warn
+          retention-days: 7
