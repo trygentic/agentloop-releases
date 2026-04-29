@@ -47,6 +47,29 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # Publishing requires a specific version tag — without it, electron-builder
+      # would attempt to upload to whatever version is currently in the
+      # source's package.json (typically the last released version), either
+      # overwriting that Release or appending to it. The intended publish flow
+      # is: tag agentloop with vX.Y.Z, then dispatch this workflow with
+      # version=X.Y.Z. source_ref is for dry-runs only.
+      - name: Validate publish inputs
+        if: ${{ inputs.publish }}
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::publish=true requires 'version' input (e.g. 0.21.0-alpha.12)."
+            echo "::error::Tag agentloop with vX.Y.Z first, then re-dispatch with version=X.Y.Z."
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version '$VERSION' is not valid semver (without 'v' prefix)."
+            exit 1
+          fi
+          echo "Publishing version $VERSION"
+
       # Validate source_ref against an allowlist before any checkout runs.
       # Untrusted refs would let a workflow_dispatch caller execute arbitrary
       # branch code with the App token in scope. Allowed: `main`, anything
@@ -168,6 +191,12 @@ jobs:
 
       # Dry-run path: produce a real installable artifact (DMG) to validate
       # the full packaging pipeline without uploading to Releases.
+      #
+      # Note: `bun run dist` (= electron-builder w/o --publish) still tries
+      # to interact with the configured publisher in electron-builder.yml
+      # to write the auto-update manifest, which requires GH_TOKEN. We
+      # explicitly pass `--publish never` to skip the publisher entirely
+      # while still producing the DMG.
       - name: Package only (no publish)
         if: ${{ !inputs.publish }}
         env:
@@ -176,7 +205,9 @@ jobs:
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: bun run dist
+        run: |
+          bun run build:desktop
+          node scripts/run-electron-builder.mjs --publish never
 
       - name: Upload packaged artifacts (dry-run only)
         if: ${{ !inputs.publish }}
