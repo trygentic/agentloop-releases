@@ -193,7 +193,11 @@ jobs:
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: bun run dist:publish
+        # ulimit must be set in the same shell as the run, since each
+        # `run:` block spawns a fresh shell.
+        run: |
+          ulimit -n 65535
+          bun run dist:publish
 
       # Dry-run path: produce a real installable artifact (DMG) to validate
       # the full packaging pipeline without uploading to Releases.
@@ -212,6 +216,7 @@ jobs:
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
+          ulimit -n 65535
           bun run build:desktop
           node scripts/run-electron-builder.mjs --publish never
 
