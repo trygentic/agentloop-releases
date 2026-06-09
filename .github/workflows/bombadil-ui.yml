@@ -1,25 +1,17 @@
 name: bombadil-ui
 
-# Path-2 Bombadil property-based UI tests — the REAL Electron desktop app driven
-# against the REAL Rust daemon (deterministic via mock-LLM fixtures). This is the
-# heavy, high-fidelity suite; the fast path-1 (served renderer, no daemon) gates
-# merges in the source repo's build.yml. See test/bombadil/README.md.
+# End-to-end UI tests for AgentLoop Desktop: build the app from source and
+# exercise it headlessly. Source lives in the private trygentic/agentloop repo
+# and is checked out via a read-only trygentic-release-bot App token (same
+# pattern as release-desktop.yml) — no source is committed here. Non-blocking;
+# its own scheduled workflow, not a required check.
 #
-# Like release-desktop.yml, source lives in the private trygentic/agentloop repo
-# and is checked out here via a read-only token minted from the
-# trygentic-release-bot GitHub App, so this can run on free public-repo runners
-# without exposing source. NON-BLOCKING: this is its own scheduled workflow, not
-# a required check on any PR.
-#
-# This workflow is also the FIRST place the Rust daemon is built in CI
-# (cargo build -p agentloop-daemon) — the source repo's build.yml does TS + the
-# Bun-compiled binary only.
+# Build/CI rationale (submodule + git-dep access, toolchain, display) is
+# documented privately in the source repo: test/bombadil/CI.md.
 
 on:
-  # Nightly signal. 07:00 UTC ≈ off-peak for US/EU contributors.
   schedule:
     - cron: '0 7 * * *'
-  # On-demand.
   workflow_dispatch:
     inputs:
       source_ref:
@@ -38,15 +30,13 @@ permissions:
   contents: read
 
 jobs:
-  bombadil-daemon:
+  ui-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
     steps:
-      # Validate source_ref against an allowlist before any checkout runs.
-      # Untrusted refs would let a workflow_dispatch caller execute arbitrary
-      # branch code with the App token in scope. Allowed: `main`, a release tag
-      # (v + digit…), or a 7–40 char hex commit SHA. Mirrors release-desktop.yml.
+      # Allowlist the ref before any checkout so a dispatch caller can't run
+      # arbitrary-branch code with the token in scope.
       - name: Validate source_ref
         env:
           REF: ${{ inputs.source_ref }}
@@ -62,9 +52,6 @@ jobs:
             exit 1
           fi
 
-      # Read-only source token. Every build step (bun install, patch scripts,
-      # vendor builds, cargo) runs with this in scope, so deny write access to
-      # the private source repo to limit blast radius of a compromised dep.
       - name: Generate App token (source, read-only)
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         id: app-token-source
@@ -72,10 +59,10 @@ jobs:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: trygentic
-          repositories: agentloop,agentloop-memory
+          repositories: agentloop,agentloop-memory,mistreevous,scallop
           permission-contents: read
 
-      - name: Checkout source (trygentic/agentloop)
+      - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: trygentic/agentloop
@@ -94,7 +81,6 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          # Keep in sync with the source repo's engines.bun (see release-desktop.yml).
           bun-version: 1.3.10
 
       - name: Setup Node.js
@@ -102,7 +88,6 @@ jobs:
         with:
           node-version: '20'
 
-      # Rust toolchain for the daemon. First time the Rust daemon is built in CI.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -114,40 +99,25 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Build sequence matches the source repo's current release-desktop.yml
-      # (TS → renderer). The Bun-daemon `fetch-bun` step is intentionally
-      # omitted: path-2 runs the app with AGENTLOOP_RUST_DAEMON=1, so it spawns
-      # the cargo-built Rust daemon (built below), not the bundled Bun binary.
-      - name: Build TypeScript
-        run: bun run build:ts-only
+      - name: Build app from source
+        run: |
+          bun run build:ts-only
+          bun run build:renderer
 
-      - name: Build renderer bundle
-        run: bun run build:renderer
-
-      # The dev daemon the app launches (AGENTLOOP_RUST_DAEMON=1) is read from
-      # crates/target/release/agentloop-daemon — make build/build:ts-only never
-      # rebuild it, so do it explicitly here. This is the first Rust build in CI.
-      #
-      # `-p agentloop-daemon` scopes the build to that package's dependency tree,
-      # which does NOT include `scallop-bridge` (the one workspace member with a
-      # private git dep on trygentic/scallop). So the read-only source token does
-      # NOT need scallop access. If agentloop-daemon ever takes a scallop dep,
-      # add `scallop` to the App token's `repositories` above.
-      - name: Build Rust daemon
+      - name: Build daemon
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
         run: cargo build -p agentloop-daemon --release --manifest-path crates/Cargo.toml
 
-      - name: Install Playwright Electron deps
-        # Playwright drives the bundled Electron; --with-deps pulls the system
-        # libraries Chromium/Electron need on a headless ubuntu runner.
+      - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
-      # xvfb gives Electron a virtual display on the headless runner.
-      - name: Run path-2 (real Electron + Rust daemon) under xvfb
+      - name: Run UI tests
         env:
           STEPS: ${{ inputs.steps || '80' }}
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" node test/bombadil/electron-runner.mjs
 
-      - name: Upload violation screenshots
+      - name: Upload artifacts on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
