@@ -104,7 +104,7 @@ jobs:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: trygentic
-          repositories: agentloop,agentloop-memory
+          repositories: agentloop,agentloop-memory,mistreevous,scallop
           permission-contents: read
 
       # Pin to the requested ref. For tag releases pass version=X.Y.Z;
@@ -141,31 +141,33 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Apply OpenCode patches
-        shell: bash
-        run: bash scripts/apply-opencode-patches.sh
-
-      - name: Install vendor dependencies
-        shell: bash
-        run: cd vendor/opencode/packages/opencode && bun install
-
       - name: Build TypeScript
         run: bun run build:ts-only
-
-      - name: Bundle vendor subset
-        run: bun run bundle:opencode-subset
-
-      - name: Rewrite opencode imports
-        run: bun run rewrite-opencode-imports
 
       - name: Build renderer bundle
         run: bun run build:renderer
 
       - name: Fetch Bun binary for target
         run: bun run fetch-bun
+
+      # Stage the bundled native daemon (cargo-built) for electron-builder
+      # extraResources. Resolves a private git dependency, so fetch via the git
+      # CLI to honour the token rewrite from the submodule-checkout step.
+      - name: Build daemon
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+        run: bun run fetch-rust-daemon
 
       # Publish-side App token. Minted only when actually publishing, so it
       # never exists during dry-runs and never sees user-controllable build
@@ -193,6 +195,9 @@ jobs:
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # build:desktop re-stages the cargo-built daemon (fetch-rust-daemon);
+          # fetch its private git dep via the git CLI (honours the token rewrite).
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
         # ulimit must be set in the same shell as the run, since each
         # `run:` block spawns a fresh shell.
         run: |
@@ -215,6 +220,7 @@ jobs:
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
         run: |
           ulimit -n 65535
           bun run build:desktop
