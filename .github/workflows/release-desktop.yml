@@ -104,7 +104,7 @@ jobs:
           app-id: ${{ vars.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
           owner: trygentic
-          repositories: agentloop,agentloop-memory,mistreevous,scallop
+          repositories: agentloop,agentloop-memory,scallop
           permission-contents: read
 
       # Pin to the requested ref. For tag releases pass version=X.Y.Z;
