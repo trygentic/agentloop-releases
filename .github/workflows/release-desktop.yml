@@ -158,9 +158,6 @@ jobs:
       - name: Build renderer bundle
         run: bun run build:renderer
 
-      - name: Fetch Bun binary for target
-        run: bun run fetch-bun
-
       # Stage the bundled native daemon (cargo-built) for electron-builder
       # extraResources. Resolves a private git dependency, so fetch via the git
       # CLI to honour the token rewrite from the submodule-checkout step.
