@@ -44,7 +44,12 @@ jobs:
             platform: darwin
             arch: arm64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # 90, not 45: a publish build does a full sign + notarization, and Apple's
+    # notarytool can queue for 20-40+ min when their service is busy. 45 cut a
+    # signed-but-still-notarizing build off mid-flight (run 27578640827). The
+    # build itself (TS+renderer+cargo+package+sign) is ~15 min; the rest is the
+    # notarization wait.
+    timeout-minutes: 90
 
     steps:
       # Publishing requires a specific version tag — without it, electron-builder
