@@ -1,3 +1,4 @@
 # agentloop-releases
 
-Binary releases for [AgentLoop Desktop](https://github.com/trygentic/agentloop).
+Sign up for our beta waitlist at https://www.agentloop.run/
+
