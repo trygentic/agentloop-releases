@@ -95,8 +95,11 @@ jobs:
       # (SCCACHE_GHA_ENABLED). Replaces Swatinem/rust-cache@v2 — both back onto
       # the same ~10GB GHA cache, so we run one, not both. RUSTC_WRAPPER below
       # is REQUIRED by crates/.cargo/config.toml (rustc-wrapper = "sccache").
+      # v0.0.7+ required: v0.0.6 exports only the legacy cache API URL, which
+      # GitHub shut down (every request 400s → sccache server fails to start →
+      # cargo dies, since crates/.cargo/config.toml mandates the wrapper).
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

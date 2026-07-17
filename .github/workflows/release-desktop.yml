@@ -43,6 +43,12 @@ jobs:
           - os: macos-14
             platform: darwin
             arch: arm64
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+          - os: windows-latest
+            platform: win32
+            arch: x64
     runs-on: ${{ matrix.os }}
     # 90, not 45: a publish build does a full sign + notarization, and Apple's
     # notarytool can queue for 20-40+ min when their service is busy. 45 cut a
@@ -153,8 +159,11 @@ jobs:
       # (SCCACHE_GHA_ENABLED). Replaces Swatinem/rust-cache@v2 — both back onto
       # the same ~10GB GHA cache, so we run one, not both. RUSTC_WRAPPER below
       # is REQUIRED by crates/.cargo/config.toml (rustc-wrapper = "sccache").
+      # v0.0.7+ required: v0.0.6 exports only the legacy cache API URL, which
+      # GitHub shut down (every request 400s → sccache server fails to start →
+      # cargo dies, since crates/.cargo/config.toml mandates the wrapper).
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -213,8 +222,10 @@ jobs:
       # Publish-side App token. Minted only when actually publishing, so it
       # never exists during dry-runs and never sees user-controllable build
       # scripts. Scoped to this repo only with contents:write.
+      # ponytail: publish path is darwin-only for now — win/linux publishing
+      # needs signing + auto-update manifest decisions; dry-run covers them.
       - name: Generate App token (publish, write)
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && matrix.platform == 'darwin' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token-publish
         with:
@@ -228,7 +239,7 @@ jobs:
       # and uploads to the repo configured in electron-builder.yml
       # (trygentic/agentloop-releases — i.e. this repo).
       - name: Package and publish (electron-builder)
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.publish && matrix.platform == 'darwin' }}
         env:
           GH_TOKEN: ${{ steps.app-token-publish.outputs.token }}
           MIXPANEL_TOKEN: ${{ secrets.MIXPANEL_TOKEN }}
@@ -264,6 +275,7 @@ jobs:
       # while still producing the DMG.
       - name: Package only (no publish)
         if: ${{ !inputs.publish }}
+        shell: bash
         env:
           MIXPANEL_TOKEN: ${{ secrets.MIXPANEL_TOKEN }}
           SENTRY_DSN: ${{ vars.SENTRY_DSN }}
@@ -272,7 +284,7 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
         run: |
-          ulimit -n 65535
+          [ "$RUNNER_OS" = "Windows" ] || ulimit -n 65535
           bun run build:desktop
           node scripts/run-electron-builder.mjs --publish never
 
@@ -285,6 +297,8 @@ jobs:
             release/**/*.dmg
             release/**/*.zip
             release/**/*.exe
+            release/**/*.AppImage
+            release/**/*.deb
             release/**/*.yml
           if-no-files-found: warn
           retention-days: 7
