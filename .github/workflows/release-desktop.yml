@@ -221,11 +221,13 @@ jobs:
 
       # Publish-side App token. Minted only when actually publishing, so it
       # never exists during dry-runs and never sees user-controllable build
-      # scripts. Scoped to this repo only with contents:write.
-      # ponytail: publish path is darwin-only for now — win/linux publishing
-      # needs signing + auto-update manifest decisions; dry-run covers them.
+      # scripts. Scoped to this repo only with contents:write. All three
+      # platforms publish now — mac is signed+notarized, win/linux ship
+      # unsigned (see electron-builder.yml win/linux blocks); electron-builder
+      # writes the per-platform auto-update manifest (latest-mac.yml /
+      # latest-linux.yml / latest.yml) into the same draft Release.
       - name: Generate App token (publish, write)
-        if: ${{ inputs.publish && matrix.platform == 'darwin' }}
+        if: ${{ inputs.publish }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token-publish
         with:
@@ -237,9 +239,14 @@ jobs:
 
       # Packaging + publishing. electron-builder reads GH_TOKEN from the env
       # and uploads to the repo configured in electron-builder.yml
-      # (trygentic/agentloop-releases — i.e. this repo).
+      # (trygentic/agentloop-releases — i.e. this repo). No target flag: it
+      # builds the host platform's targets (mac→dmg/zip, win→nsis,
+      # linux→dir/AppImage/deb per electron-builder.yml). The Apple signing
+      # env below is darwin-only; on win/linux the runner has no cert/keychain,
+      # so electron-builder simply skips signing (win is unsigned by design).
       - name: Package and publish (electron-builder)
-        if: ${{ inputs.publish && matrix.platform == 'darwin' }}
+        if: ${{ inputs.publish }}
+        shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token-publish.outputs.token }}
           MIXPANEL_TOKEN: ${{ secrets.MIXPANEL_TOKEN }}
@@ -252,17 +259,20 @@ jobs:
           CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
           # Code signing: scope the cert lookup to the build keychain imported
           # above so a stray cert on the runner can't win the identity match.
+          # Empty (harmless) on win/linux where the import step didn't run.
           CSC_KEYCHAIN: ${{ runner.temp }}/build.keychain
           # Notarization via notarytool with the App Store Connect API key.
           # APPLE_API_KEY points at the .p8 written to disk in the run block.
           APPLE_API_KEY: ${{ runner.temp }}/apple_api_key.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        # ulimit must be set in the same shell as the run, since each
-        # `run:` block spawns a fresh shell.
+        # ulimit / Apple-key are darwin-only; guard them so the shared step
+        # runs unchanged on the win/linux runners (Windows has no ulimit).
         run: |
-          ulimit -n 65535
-          echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 -d > "$RUNNER_TEMP/apple_api_key.p8"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ulimit -n 65535
+            echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 -d > "$RUNNER_TEMP/apple_api_key.p8"
+          fi
           bun run dist:publish
 
       # Dry-run path: produce a real installable artifact (DMG) to validate
