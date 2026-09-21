@@ -275,6 +275,37 @@ jobs:
           fi
           bun run dist:publish
 
+      # TK-904 — electron-builder signs and notarizes the APP, then wraps it in
+      # a DMG and stops, so the disk image itself shipped unsigned and with no
+      # stapled ticket. The script signs, notarizes and staples it, then
+      # repairs latest-mac.yml: electron-builder wrote that manifest before the
+      # DMG could be touched, and signing changes the bytes electron-updater
+      # verifies. The script fails loudly rather than leaving the two
+      # inconsistent. Re-uploading replaces the assets electron-builder just
+      # put on the DRAFT release — invisible to installed apps until published.
+      - name: Sign + notarize the DMG, then re-upload (macOS)
+        if: ${{ inputs.publish && matrix.platform == 'darwin' }}
+        env:
+          CSC_KEYCHAIN: ${{ runner.temp }}/build.keychain
+          APPLE_API_KEY: ${{ runner.temp }}/apple_api_key.p8
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          GH_TOKEN: ${{ steps.app-token-publish.outputs.token }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          node scripts/sign-notarize-dmg.mjs release
+          gh release upload "v$VERSION" \
+            release/*.dmg release/latest-mac.yml \
+            --clobber --repo trygentic/agentloop-releases
+
+      # The .p8 outlives the step that wrote it (RUNNER_TEMP persists for the
+      # job), so remove it once nothing else needs it.
+      - name: Remove notarization key
+        if: ${{ always() && matrix.platform == 'darwin' }}
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/apple_api_key.p8"
+
       # Dry-run path: produce a real installable artifact (DMG) to validate
       # the full packaging pipeline without uploading to Releases.
       #
