@@ -17,7 +17,8 @@ concurrency:
 jobs:
   sign:
     if: github.repository == 'trygentic/agentloop-releases' && github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    # Signing inspects arm64 Mach-O files without executing them.
+    runs-on: macos-15-intel
     timeout-minutes: 65
     permissions:
       contents: read
